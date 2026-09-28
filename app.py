@@ -1,8 +1,11 @@
 import streamlit as st
-import sqlite3
+import mysql.connector
+from mysql.connector import Error
 from datetime import datetime, date
 import pandas as pd
-st.image("images.jpg")
+import os
+
+
 # =========================================================
 # CONFIG
 # =========================================================
@@ -14,93 +17,190 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-DB_NAME = "hotel.db"
+
+# =========================================================
+# AIVEN MYSQL CONFIG
+# =========================================================
+
+DB_CONFIG = {
+    "host": "mysql-3d53e6d-linhlinh102025-4f61.j.aivencloud.com",
+    "port": 12534,
+    "user": "avnadmin",
+    "password": "AVNS_xCvNg6GogirYjn1YxYI",
+    "database": "defaultdb",
+
+    # Aiven yêu cầu SSL
+    "ssl_disabled": False,
+    "ssl_verify_cert": False,
+    "ssl_verify_identity": False,
+
+    "autocommit": False
+}
 
 
 # =========================================================
-# DATABASE
+# DATABASE CONNECTION
 # =========================================================
 
 def get_connection():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """
+    Tạo kết nối đến MySQL Aiven.
+    """
 
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+
+        if conn.is_connected():
+            return conn
+
+        return None
+
+    except Error as e:
+        st.error(f"❌ Không thể kết nối MySQL Aiven: {e}")
+        return None
+
+
+# =========================================================
+# INITIALIZE DATABASE
+# =========================================================
 
 def init_database():
+
     conn = get_connection()
+
+    if conn is None:
+        return False
+
     cursor = conn.cursor()
 
-    # Bảng phòng
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS rooms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_number TEXT UNIQUE NOT NULL,
-            room_type TEXT NOT NULL,
-            floor INTEGER NOT NULL,
-            price REAL NOT NULL,
-            status TEXT NOT NULL DEFAULT 'Trống'
+    try:
+
+        # -------------------------------------------------
+        # BẢNG PHÒNG
+        # -------------------------------------------------
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rooms (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                room_number VARCHAR(20) UNIQUE NOT NULL,
+                room_type VARCHAR(50) NOT NULL,
+                floor INT NOT NULL,
+                price DECIMAL(15,2) NOT NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'Trống'
+            )
+        """)
+
+        # -------------------------------------------------
+        # BẢNG KHÁCH HÀNG
+        # -------------------------------------------------
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS guests (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(150) NOT NULL,
+                phone VARCHAR(30),
+                email VARCHAR(150),
+                id_card VARCHAR(50)
+            )
+        """)
+
+        # -------------------------------------------------
+        # BẢNG ĐẶT PHÒNG
+        # -------------------------------------------------
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bookings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+
+                room_id INT NOT NULL,
+                guest_id INT NOT NULL,
+
+                check_in DATE NOT NULL,
+                check_out DATE NOT NULL,
+
+                adults INT DEFAULT 1,
+                children INT DEFAULT 0,
+
+                status VARCHAR(30) NOT NULL DEFAULT 'Đã đặt',
+
+                total DECIMAL(15,2) DEFAULT 0,
+
+                created_at DATETIME NOT NULL,
+
+                FOREIGN KEY (room_id)
+                    REFERENCES rooms(id)
+                    ON DELETE RESTRICT
+                    ON UPDATE CASCADE,
+
+                FOREIGN KEY (guest_id)
+                    REFERENCES guests(id)
+                    ON DELETE RESTRICT
+                    ON UPDATE CASCADE
+            )
+        """)
+
+        # -------------------------------------------------
+        # TẠO DỮ LIỆU PHÒNG MẪU NẾU CHƯA CÓ
+        # -------------------------------------------------
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM rooms"
         )
-    """)
 
-    # Bảng khách hàng
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS guests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            phone TEXT,
-            email TEXT,
-            id_card TEXT
+        room_count = cursor.fetchone()[0]
+
+        if room_count == 0:
+
+            sample_rooms = [
+                ("101", "Standard", 1, 700000, "Trống"),
+                ("102", "Standard", 1, 700000, "Trống"),
+                ("103", "Standard", 1, 700000, "Trống"),
+
+                ("201", "Superior", 2, 1000000, "Trống"),
+                ("202", "Superior", 2, 1000000, "Trống"),
+                ("203", "Superior", 2, 1000000, "Trống"),
+
+                ("301", "Deluxe", 3, 1400000, "Trống"),
+                ("302", "Deluxe", 3, 1400000, "Trống"),
+
+                ("401", "Suite", 4, 2200000, "Trống"),
+                ("402", "Suite", 4, 2200000, "Trống")
+            ]
+
+            cursor.executemany("""
+                INSERT INTO rooms
+                (
+                    room_number,
+                    room_type,
+                    floor,
+                    price,
+                    status
+                )
+                VALUES (%s, %s, %s, %s, %s)
+            """, sample_rooms)
+
+        conn.commit()
+
+        return True
+
+    except Error as e:
+
+        conn.rollback()
+
+        st.error(
+            f"❌ Lỗi khởi tạo database: {e}"
         )
-    """)
 
-    # Bảng đặt phòng
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_id INTEGER NOT NULL,
-            guest_id INTEGER NOT NULL,
-            check_in TEXT NOT NULL,
-            check_out TEXT NOT NULL,
-            adults INTEGER DEFAULT 1,
-            children INTEGER DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'Đã đặt',
-            total REAL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(room_id) REFERENCES rooms(id),
-            FOREIGN KEY(guest_id) REFERENCES guests(id)
-        )
-    """)
+        return False
 
-    # Nếu chưa có phòng thì tạo dữ liệu mẫu
-    cursor.execute("SELECT COUNT(*) FROM rooms")
-    room_count = cursor.fetchone()[0]
+    finally:
 
-    if room_count == 0:
-        sample_rooms = [
-            ("101", "Standard", 1, 700000, "Trống"),
-            ("102", "Standard", 1, 700000, "Trống"),
-            ("103", "Standard", 1, 700000, "Trống"),
-            ("201", "Superior", 2, 1000000, "Trống"),
-            ("202", "Superior", 2, 1000000, "Trống"),
-            ("203", "Superior", 2, 1000000, "Trống"),
-            ("301", "Deluxe", 3, 1400000, "Trống"),
-            ("302", "Deluxe", 3, 1400000, "Trống"),
-            ("401", "Suite", 4, 2200000, "Trống"),
-            ("402", "Suite", 4, 2200000, "Trống"),
-        ]
-
-        cursor.executemany("""
-            INSERT INTO rooms
-            (room_number, room_type, floor, price, status)
-            VALUES (?, ?, ?, ?, ?)
-        """, sample_rooms)
-
-    conn.commit()
-    conn.close()
+        cursor.close()
+        conn.close()
 
 
-init_database()
+# Khởi tạo database
+database_ready = init_database()
 
 
 # =========================================================
@@ -108,65 +208,206 @@ init_database()
 # =========================================================
 
 def format_currency(value):
-    return f"{value:,.0f} VNĐ"
 
+    if value is None:
+        value = 0
+
+    return f"{float(value):,.0f} VNĐ"
+
+
+# =========================================================
+# GET ROOMS
+# =========================================================
 
 def get_rooms():
-    conn = get_connection()
-    df = pd.read_sql_query(
-        "SELECT * FROM rooms ORDER BY CAST(room_number AS INTEGER)",
-        conn
-    )
-    conn.close()
-    return df
 
+    conn = get_connection()
+
+    if conn is None:
+        return pd.DataFrame()
+
+    try:
+
+        query = """
+            SELECT
+                id,
+                room_number,
+                room_type,
+                floor,
+                price,
+                status
+            FROM rooms
+            ORDER BY CAST(room_number AS UNSIGNED)
+        """
+
+        df = pd.read_sql(query, conn)
+
+        return df
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Không thể lấy danh sách phòng: {e}"
+        )
+
+        return pd.DataFrame()
+
+    finally:
+
+        conn.close()
+
+
+# =========================================================
+# GET GUESTS
+# =========================================================
 
 def get_guests():
-    conn = get_connection()
-    df = pd.read_sql_query(
-        "SELECT * FROM guests ORDER BY id DESC",
-        conn
-    )
-    conn.close()
-    return df
 
+    conn = get_connection()
+
+    if conn is None:
+        return pd.DataFrame()
+
+    try:
+
+        query = """
+            SELECT
+                id,
+                name,
+                phone,
+                email,
+                id_card
+            FROM guests
+            ORDER BY id DESC
+        """
+
+        return pd.read_sql(query, conn)
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Không thể lấy danh sách khách hàng: {e}"
+        )
+
+        return pd.DataFrame()
+
+    finally:
+
+        conn.close()
+
+
+# =========================================================
+# GET BOOKINGS
+# =========================================================
 
 def get_bookings():
+
     conn = get_connection()
 
-    query = """
-        SELECT
-            bookings.id,
-            rooms.room_number,
-            rooms.room_type,
-            guests.name AS guest_name,
-            guests.phone,
-            bookings.check_in,
-            bookings.check_out,
-            bookings.adults,
-            bookings.children,
-            bookings.status,
-            bookings.total,
-            bookings.created_at
-        FROM bookings
-        JOIN rooms ON bookings.room_id = rooms.id
-        JOIN guests ON bookings.guest_id = guests.id
-        ORDER BY bookings.id DESC
-    """
+    if conn is None:
+        return pd.DataFrame()
 
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-    return df
+    try:
 
+        query = """
+            SELECT
+
+                bookings.id,
+
+                rooms.room_number,
+
+                rooms.room_type,
+
+                guests.name AS guest_name,
+
+                guests.phone,
+
+                guests.email,
+
+                guests.id_card,
+
+                bookings.check_in,
+
+                bookings.check_out,
+
+                bookings.adults,
+
+                bookings.children,
+
+                bookings.status,
+
+                bookings.total,
+
+                bookings.created_at
+
+            FROM bookings
+
+            INNER JOIN rooms
+                ON bookings.room_id = rooms.id
+
+            INNER JOIN guests
+                ON bookings.guest_id = guests.id
+
+            ORDER BY bookings.id DESC
+        """
+
+        return pd.read_sql(query, conn)
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Không thể lấy danh sách đặt phòng: {e}"
+        )
+
+        return pd.DataFrame()
+
+    finally:
+
+        conn.close()
+
+
+# =========================================================
+# UPDATE ROOM STATUS
+# =========================================================
 
 def update_room_status(room_id, status):
+
     conn = get_connection()
-    conn.execute(
-        "UPDATE rooms SET status = ? WHERE id = ?",
-        (status, room_id)
-    )
-    conn.commit()
-    conn.close()
+
+    if conn is None:
+        return False
+
+    cursor = conn.cursor()
+
+    try:
+
+        cursor.execute("""
+            UPDATE rooms
+            SET status = %s
+            WHERE id = %s
+        """, (
+            status,
+            room_id
+        ))
+
+        conn.commit()
+
+        return True
+
+    except Error as e:
+
+        conn.rollback()
+
+        st.error(
+            f"❌ Không thể cập nhật trạng thái phòng: {e}"
+        )
+
+        return False
+
+    finally:
+
+        cursor.close()
+        conn.close()
 
 
 # =========================================================
@@ -174,7 +415,10 @@ def update_room_status(room_id, status):
 # =========================================================
 
 st.sidebar.title("🏨 HOTEL MANAGER")
-st.sidebar.caption("Hệ thống quản lý phòng khách sạn")
+
+st.sidebar.caption(
+    "Hệ thống quản lý phòng khách sạn"
+)
 
 menu = st.sidebar.radio(
     "MENU",
@@ -189,9 +433,26 @@ menu = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-st.sidebar.info(
-    "💡 Dữ liệu được lưu tự động trong file hotel.db"
+
+st.sidebar.success(
+    "🟢 Database: MySQL Aiven"
 )
+
+st.sidebar.info(
+    "💡 Dữ liệu được lưu trực tiếp trên Aiven MySQL."
+)
+
+
+# =========================================================
+# OPTIONAL IMAGE
+# =========================================================
+
+if os.path.exists("images.jpg"):
+
+    st.image(
+        "images.jpg",
+        use_container_width=True
+    )
 
 
 # =========================================================
@@ -201,87 +462,171 @@ st.sidebar.info(
 if menu == "📊 Dashboard":
 
     st.title("📊 Dashboard")
-    st.write("Tổng quan tình trạng khách sạn")
+
+    st.write(
+        "Tổng quan tình trạng khách sạn"
+    )
 
     rooms = get_rooms()
     bookings = get_bookings()
 
-    total_rooms = len(rooms)
-    available = len(rooms[rooms["status"] == "Trống"])
-    occupied = len(rooms[rooms["status"] == "Đang ở"])
-    reserved = len(rooms[rooms["status"] == "Đã đặt"])
-    cleaning = len(rooms[rooms["status"] == "Đang dọn"])
+    if rooms.empty:
 
-    occupancy = 0
-    if total_rooms > 0:
-        occupancy = (occupied / total_rooms) * 100
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    col1.metric("🏨 Tổng phòng", total_rooms)
-    col2.metric("🟢 Phòng trống", available)
-    col3.metric("🔴 Đang ở", occupied)
-    col4.metric("🟡 Đã đặt", reserved)
-    col5.metric("🧹 Đang dọn", cleaning)
-
-    st.divider()
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("📌 Công suất phòng")
-
-        st.progress(min(occupancy / 100, 1.0))
-
-        st.metric(
-            "Công suất hiện tại",
-            f"{occupancy:.1f}%"
+        st.warning(
+            "Chưa có dữ liệu phòng."
         )
 
-    with col2:
-        st.subheader("💰 Doanh thu")
+    else:
 
-        if not bookings.empty:
-            completed = bookings[
-                bookings["status"].isin(
-                    ["Đã trả phòng", "Đang ở"]
-                )
+        total_rooms = len(rooms)
+
+        available = len(
+            rooms[rooms["status"] == "Trống"]
+        )
+
+        occupied = len(
+            rooms[rooms["status"] == "Đang ở"]
+        )
+
+        reserved = len(
+            rooms[rooms["status"] == "Đã đặt"]
+        )
+
+        cleaning = len(
+            rooms[rooms["status"] == "Đang dọn"]
+        )
+
+        occupancy = 0
+
+        if total_rooms > 0:
+
+            occupancy = (
+                occupied / total_rooms
+            ) * 100
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        col1.metric(
+            "🏨 Tổng phòng",
+            total_rooms
+        )
+
+        col2.metric(
+            "🟢 Phòng trống",
+            available
+        )
+
+        col3.metric(
+            "🔴 Đang ở",
+            occupied
+        )
+
+        col4.metric(
+            "🟡 Đã đặt",
+            reserved
+        )
+
+        col5.metric(
+            "🧹 Đang dọn",
+            cleaning
+        )
+
+        st.divider()
+
+        col1, col2 = st.columns(2)
+
+        # -------------------------------------------------
+        # OCCUPANCY
+        # -------------------------------------------------
+
+        with col1:
+
+            st.subheader(
+                "📌 Công suất phòng"
+            )
+
+            st.progress(
+                min(occupancy / 100, 1.0)
+            )
+
+            st.metric(
+                "Công suất hiện tại",
+                f"{occupancy:.1f}%"
+            )
+
+        # -------------------------------------------------
+        # REVENUE
+        # -------------------------------------------------
+
+        with col2:
+
+            st.subheader(
+                "💰 Doanh thu"
+            )
+
+            if not bookings.empty:
+
+                completed = bookings[
+                    bookings["status"].isin(
+                        [
+                            "Đã trả phòng",
+                            "Đang ở"
+                        ]
+                    )
+                ]
+
+                revenue = completed[
+                    "total"
+                ].sum()
+
+            else:
+
+                revenue = 0
+
+            st.metric(
+                "Tổng doanh thu",
+                format_currency(revenue)
+            )
+
+        st.divider()
+
+        # -------------------------------------------------
+        # ROOM STATUS
+        # -------------------------------------------------
+
+        st.subheader(
+            "🛏️ Tình trạng phòng"
+        )
+
+        display_rooms = rooms[
+            [
+                "room_number",
+                "room_type",
+                "floor",
+                "price",
+                "status"
             ]
+        ].copy()
 
-            revenue = completed["total"].sum()
-        else:
-            revenue = 0
+        display_rooms.columns = [
+            "Số phòng",
+            "Loại phòng",
+            "Tầng",
+            "Giá/đêm",
+            "Trạng thái"
+        ]
 
-        st.metric(
-            "Tổng doanh thu",
-            format_currency(revenue)
+        display_rooms[
+            "Giá/đêm"
+        ] = display_rooms[
+            "Giá/đêm"
+        ].apply(format_currency)
+
+        st.dataframe(
+            display_rooms,
+            use_container_width=True,
+            hide_index=True
         )
-
-    st.divider()
-
-    st.subheader("🛏️ Tình trạng phòng")
-
-    display_rooms = rooms[
-        ["room_number", "room_type", "floor", "price", "status"]
-    ].copy()
-
-    display_rooms.columns = [
-        "Số phòng",
-        "Loại phòng",
-        "Tầng",
-        "Giá/đêm",
-        "Trạng thái"
-    ]
-
-    display_rooms["Giá/đêm"] = display_rooms["Giá/đêm"].apply(
-        format_currency
-    )
-
-    st.dataframe(
-        display_rooms,
-        use_container_width=True,
-        hide_index=True
-    )
 
 
 # =========================================================
@@ -292,62 +637,84 @@ elif menu == "🛏️ Quản lý phòng":
 
     st.title("🛏️ Quản lý phòng")
 
-    tabs = st.tabs([
-        "📋 Danh sách phòng",
-        "➕ Thêm phòng",
-        "✏️ Cập nhật phòng"
-    ])
+    tabs = st.tabs(
+        [
+            "📋 Danh sách phòng",
+            "➕ Thêm phòng",
+            "✏️ Cập nhật phòng"
+        ]
+    )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ROOM LIST
-    # -----------------------------------------------------
+    # =====================================================
 
     with tabs[0]:
 
         rooms = get_rooms()
 
-        col1, col2 = st.columns(2)
+        if rooms.empty:
 
-        with col1:
-            search = st.text_input(
-                "🔎 Tìm phòng",
-                placeholder="Nhập số phòng..."
+            st.info(
+                "Chưa có phòng nào."
             )
 
-        with col2:
-            status_filter = st.selectbox(
-                "Lọc trạng thái",
-                [
-                    "Tất cả",
-                    "Trống",
-                    "Đã đặt",
-                    "Đang ở",
-                    "Đang dọn"
+        else:
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                search = st.text_input(
+                    "🔎 Tìm phòng",
+                    placeholder="Nhập số phòng..."
+                )
+
+            with col2:
+
+                status_filter = st.selectbox(
+                    "Lọc trạng thái",
+                    [
+                        "Tất cả",
+                        "Trống",
+                        "Đã đặt",
+                        "Đang ở",
+                        "Đang dọn"
+                    ]
+                )
+
+            filtered = rooms.copy()
+
+            if search:
+
+                filtered = filtered[
+                    filtered[
+                        "room_number"
+                    ].astype(str).str.contains(
+                        search,
+                        case=False,
+                        na=False
+                    )
                 ]
+
+            if status_filter != "Tất cả":
+
+                filtered = filtered[
+                    filtered["status"]
+                    == status_filter
+                ]
+
+            display = filtered.rename(
+                columns={
+                    "room_number": "Số phòng",
+                    "room_type": "Loại phòng",
+                    "floor": "Tầng",
+                    "price": "Giá/đêm",
+                    "status": "Trạng thái"
+                }
             )
 
-        filtered = rooms.copy()
-
-        if search:
-            filtered = filtered[
-                filtered["room_number"]
-                .astype(str)
-                .str.contains(search, case=False)
-            ]
-
-        if status_filter != "Tất cả":
-            filtered = filtered[
-                filtered["status"] == status_filter
-            ]
-
-        st.dataframe(
-            filtered.rename(columns={
-                "room_number": "Số phòng",
-                "room_type": "Loại phòng",
-                "floor": "Tầng",
-                "price": "Giá/đêm",
-                "status": "Trạng thái"
-            })[
+            display = display[
                 [
                     "Số phòng",
                     "Loại phòng",
@@ -355,24 +722,34 @@ elif menu == "🛏️ Quản lý phòng":
                     "Giá/đêm",
                     "Trạng thái"
                 ]
-            ],
-            use_container_width=True,
-            hide_index=True
-        )
+            ]
 
-    # -----------------------------------------------------
+            display["Giá/đêm"] = display[
+                "Giá/đêm"
+            ].apply(format_currency)
+
+            st.dataframe(
+                display,
+                use_container_width=True,
+                hide_index=True
+            )
+
+    # =====================================================
     # ADD ROOM
-    # -----------------------------------------------------
+    # =====================================================
 
     with tabs[1]:
 
-        st.subheader("➕ Thêm phòng mới")
+        st.subheader(
+            "➕ Thêm phòng mới"
+        )
 
         with st.form("add_room"):
 
             col1, col2 = st.columns(2)
 
             with col1:
+
                 room_number = st.text_input(
                     "Số phòng *"
                 )
@@ -412,46 +789,72 @@ elif menu == "🛏️ Quản lý phòng":
         if submitted:
 
             if not room_number.strip():
-                st.error("Vui lòng nhập số phòng.")
+
+                st.error(
+                    "Vui lòng nhập số phòng."
+                )
 
             else:
 
                 conn = get_connection()
 
-                try:
+                if conn:
 
-                    conn.execute("""
-                        INSERT INTO rooms
-                        (room_number, room_type, floor, price, status)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (
-                        room_number.strip(),
-                        room_type,
-                        floor,
-                        price,
-                        "Trống"
-                    ))
+                    cursor = conn.cursor()
 
-                    conn.commit()
+                    try:
 
-                    st.success(
-                        f"Đã thêm phòng {room_number}!"
-                    )
+                        cursor.execute("""
+                            INSERT INTO rooms
+                            (
+                                room_number,
+                                room_type,
+                                floor,
+                                price,
+                                status
+                            )
+                            VALUES
+                            (%s, %s, %s, %s, %s)
+                        """, (
+                            room_number.strip(),
+                            room_type,
+                            floor,
+                            price,
+                            "Trống"
+                        ))
 
-                    st.rerun()
+                        conn.commit()
 
-                except sqlite3.IntegrityError:
+                        st.success(
+                            f"Đã thêm phòng {room_number}!"
+                        )
 
-                    st.error(
-                        "Số phòng này đã tồn tại."
-                    )
+                        st.rerun()
 
-                finally:
-                    conn.close()
+                    except Error as e:
 
-    # -----------------------------------------------------
+                        conn.rollback()
+
+                        if e.errno == 1062:
+
+                            st.error(
+                                "Số phòng này đã tồn tại."
+                            )
+
+                        else:
+
+                            st.error(
+                                f"❌ Lỗi: {e}"
+                            )
+
+                    finally:
+
+                        cursor.close()
+                        conn.close()
+
+    # =====================================================
     # UPDATE ROOM
-    # -----------------------------------------------------
+    # =====================================================
 
     with tabs[2]:
 
@@ -459,11 +862,16 @@ elif menu == "🛏️ Quản lý phòng":
 
         if rooms.empty:
 
-            st.warning("Chưa có phòng.")
+            st.warning(
+                "Chưa có phòng."
+            )
 
         else:
 
-            room_options = rooms["room_number"].tolist()
+            room_options = (
+                rooms["room_number"]
+                .tolist()
+            )
 
             selected_room = st.selectbox(
                 "Chọn phòng",
@@ -471,10 +879,28 @@ elif menu == "🛏️ Quản lý phòng":
             )
 
             room = rooms[
-                rooms["room_number"] == selected_room
+                rooms["room_number"]
+                == selected_room
             ].iloc[0]
 
-            with st.form("update_room"):
+            room_types = [
+                "Standard",
+                "Superior",
+                "Deluxe",
+                "Suite",
+                "Family"
+            ]
+
+            statuses = [
+                "Trống",
+                "Đã đặt",
+                "Đang ở",
+                "Đang dọn"
+            ]
+
+            with st.form(
+                "update_room"
+            ):
 
                 col1, col2 = st.columns(2)
 
@@ -482,26 +908,18 @@ elif menu == "🛏️ Quản lý phòng":
 
                     new_type = st.selectbox(
                         "Loại phòng",
-                        [
-                            "Standard",
-                            "Superior",
-                            "Deluxe",
-                            "Suite",
-                            "Family"
-                        ],
-                        index=[
-                            "Standard",
-                            "Superior",
-                            "Deluxe",
-                            "Suite",
-                            "Family"
-                        ].index(room["room_type"])
+                        room_types,
+                        index=room_types.index(
+                            room["room_type"]
+                        )
                     )
 
                     new_floor = st.number_input(
                         "Tầng",
                         min_value=1,
-                        value=int(room["floor"])
+                        value=int(
+                            room["floor"]
+                        )
                     )
 
                 with col2:
@@ -509,24 +927,18 @@ elif menu == "🛏️ Quản lý phòng":
                     new_price = st.number_input(
                         "Giá/đêm",
                         min_value=0,
-                        value=int(room["price"]),
+                        value=int(
+                            room["price"]
+                        ),
                         step=50000
                     )
 
                     new_status = st.selectbox(
                         "Trạng thái",
-                        [
-                            "Trống",
-                            "Đã đặt",
-                            "Đang ở",
-                            "Đang dọn"
-                        ],
-                        index=[
-                            "Trống",
-                            "Đã đặt",
-                            "Đang ở",
-                            "Đang dọn"
-                        ].index(room["status"])
+                        statuses,
+                        index=statuses.index(
+                            room["status"]
+                        )
                     )
 
                 update = st.form_submit_button(
@@ -538,29 +950,48 @@ elif menu == "🛏️ Quản lý phòng":
 
                 conn = get_connection()
 
-                conn.execute("""
-                    UPDATE rooms
-                    SET room_type = ?,
-                        floor = ?,
-                        price = ?,
-                        status = ?
-                    WHERE room_number = ?
-                """, (
-                    new_type,
-                    new_floor,
-                    new_price,
-                    new_status,
-                    selected_room
-                ))
+                if conn:
 
-                conn.commit()
-                conn.close()
+                    cursor = conn.cursor()
 
-                st.success(
-                    "Đã cập nhật thông tin phòng."
-                )
+                    try:
 
-                st.rerun()
+                        cursor.execute("""
+                            UPDATE rooms
+                            SET
+                                room_type = %s,
+                                floor = %s,
+                                price = %s,
+                                status = %s
+                            WHERE room_number = %s
+                        """, (
+                            new_type,
+                            new_floor,
+                            new_price,
+                            new_status,
+                            selected_room
+                        ))
+
+                        conn.commit()
+
+                        st.success(
+                            "Đã cập nhật thông tin phòng."
+                        )
+
+                        st.rerun()
+
+                    except Error as e:
+
+                        conn.rollback()
+
+                        st.error(
+                            f"❌ Lỗi: {e}"
+                        )
+
+                    finally:
+
+                        cursor.close()
+                        conn.close()
 
 
 # =========================================================
@@ -585,9 +1016,13 @@ elif menu == "📅 Đặt phòng":
 
     else:
 
-        st.subheader("Thông tin đặt phòng")
+        st.subheader(
+            "Thông tin đặt phòng"
+        )
 
-        with st.form("booking_form"):
+        with st.form(
+            "booking_form"
+        ):
 
             col1, col2 = st.columns(2)
 
@@ -613,7 +1048,9 @@ elif menu == "📅 Đặt phòng":
 
                 room_number = st.selectbox(
                     "Chọn phòng",
-                    available_rooms["room_number"].tolist()
+                    available_rooms[
+                        "room_number"
+                    ].tolist()
                 )
 
                 check_in = st.date_input(
@@ -660,80 +1097,128 @@ elif menu == "📅 Đặt phòng":
             else:
 
                 selected = available_rooms[
-                    available_rooms["room_number"]
-                    == room_number
+                    available_rooms[
+                        "room_number"
+                    ] == room_number
                 ].iloc[0]
 
                 nights = (
                     check_out - check_in
                 ).days
 
-                total = nights * selected["price"]
+                total = (
+                    nights
+                    * float(selected["price"])
+                )
 
                 conn = get_connection()
-                cursor = conn.cursor()
 
-                # Thêm khách
-                cursor.execute("""
-                    INSERT INTO guests
-                    (name, phone, email, id_card)
-                    VALUES (?, ?, ?, ?)
-                """, (
-                    guest_name.strip(),
-                    phone,
-                    email,
-                    id_card
-                ))
+                if conn:
 
-                guest_id = cursor.lastrowid
+                    cursor = conn.cursor()
 
-                # Thêm booking
-                cursor.execute("""
-                    INSERT INTO bookings
-                    (
-                        room_id,
-                        guest_id,
-                        check_in,
-                        check_out,
-                        adults,
-                        children,
-                        status,
-                        total,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    int(selected["id"]),
-                    guest_id,
-                    check_in.isoformat(),
-                    check_out.isoformat(),
-                    adults,
-                    children,
-                    "Đã đặt",
-                    total,
-                    datetime.now().isoformat()
-                ))
+                    try:
 
-                # Đổi trạng thái phòng
-                cursor.execute("""
-                    UPDATE rooms
-                    SET status = 'Đã đặt'
-                    WHERE id = ?
-                """, (
-                    int(selected["id"]),
-                ))
+                        # ---------------------------------
+                        # THÊM KHÁCH
+                        # ---------------------------------
 
-                conn.commit()
-                conn.close()
+                        cursor.execute("""
+                            INSERT INTO guests
+                            (
+                                name,
+                                phone,
+                                email,
+                                id_card
+                            )
+                            VALUES
+                            (%s, %s, %s, %s)
+                        """, (
+                            guest_name.strip(),
+                            phone,
+                            email,
+                            id_card
+                        ))
 
-                st.success(
-                    f"Đặt phòng {room_number} thành công!"
-                )
+                        guest_id = cursor.lastrowid
 
-                st.info(
-                    f"Tổng tiền: {format_currency(total)} "
-                    f"({nights} đêm)"
-                )
+                        # ---------------------------------
+                        # THÊM BOOKING
+                        # ---------------------------------
+
+                        cursor.execute("""
+                            INSERT INTO bookings
+                            (
+                                room_id,
+                                guest_id,
+                                check_in,
+                                check_out,
+                                adults,
+                                children,
+                                status,
+                                total,
+                                created_at
+                            )
+                            VALUES
+                            (
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s
+                            )
+                        """, (
+                            int(selected["id"]),
+                            guest_id,
+                            check_in,
+                            check_out,
+                            adults,
+                            children,
+                            "Đã đặt",
+                            total,
+                            datetime.now()
+                        ))
+
+                        # ---------------------------------
+                        # ĐỔI TRẠNG THÁI PHÒNG
+                        # ---------------------------------
+
+                        cursor.execute("""
+                            UPDATE rooms
+                            SET status = 'Đã đặt'
+                            WHERE id = %s
+                        """, (
+                            int(selected["id"]),
+                        ))
+
+                        conn.commit()
+
+                        st.success(
+                            f"Đặt phòng {room_number} thành công!"
+                        )
+
+                        st.info(
+                            f"Tổng tiền: "
+                            f"{format_currency(total)} "
+                            f"({nights} đêm)"
+                        )
+
+                    except Error as e:
+
+                        conn.rollback()
+
+                        st.error(
+                            f"❌ Không thể tạo đặt phòng: {e}"
+                        )
+
+                    finally:
+
+                        cursor.close()
+                        conn.close()
 
 
 # =========================================================
@@ -742,57 +1227,80 @@ elif menu == "📅 Đặt phòng":
 
 elif menu == "👤 Khách hàng":
 
-    st.title("👤 Quản lý khách hàng")
+    st.title(
+        "👤 Quản lý khách hàng"
+    )
 
     guests = get_guests()
 
-    st.subheader("🔎 Danh sách khách hàng")
+    if guests.empty:
 
-    search_guest = st.text_input(
-        "Tìm theo tên / số điện thoại"
-    )
-
-    filtered = guests.copy()
-
-    if search_guest:
-
-        mask = (
-            filtered["name"]
-            .astype(str)
-            .str.contains(
-                search_guest,
-                case=False,
-                na=False
-            )
-            |
-            filtered["phone"]
-            .astype(str)
-            .str.contains(
-                search_guest,
-                case=False,
-                na=False
-            )
+        st.info(
+            "Chưa có khách hàng nào."
         )
 
-        filtered = filtered[mask]
+    else:
 
-    st.dataframe(
-        filtered.rename(columns={
-            "name": "Họ tên",
-            "phone": "Số điện thoại",
-            "email": "Email",
-            "id_card": "CCCD / Passport"
-        })[
+        st.subheader(
+            "🔎 Danh sách khách hàng"
+        )
+
+        search_guest = st.text_input(
+            "Tìm theo tên / số điện thoại"
+        )
+
+        filtered = guests.copy()
+
+        if search_guest:
+
+            name_mask = (
+                filtered["name"]
+                .astype(str)
+                .str.contains(
+                    search_guest,
+                    case=False,
+                    na=False
+                )
+            )
+
+            phone_mask = (
+                filtered["phone"]
+                .fillna("")
+                .astype(str)
+                .str.contains(
+                    search_guest,
+                    case=False,
+                    na=False
+                )
+            )
+
+            filtered = filtered[
+                name_mask | phone_mask
+            ]
+
+        display_guests = filtered.rename(
+            columns={
+                "name": "Họ tên",
+                "phone": "Số điện thoại",
+                "email": "Email",
+                "id_card": "CCCD / Passport"
+            }
+        )
+
+        display_guests = display_guests[
             [
                 "Họ tên",
                 "Số điện thoại",
                 "Email",
                 "CCCD / Passport"
             ]
-        ],
-        use_container_width=True,
-        hide_index=True
-    )
+        ]
+
+        st.dataframe(
+            display_guests,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 # =========================================================
@@ -801,33 +1309,48 @@ elif menu == "👤 Khách hàng":
 
 elif menu == "💰 Đặt phòng hiện tại":
 
-    st.title("💰 Quản lý đặt phòng")
+    st.title(
+        "💰 Quản lý đặt phòng"
+    )
 
     bookings = get_bookings()
 
     if bookings.empty:
 
-        st.info("Chưa có đặt phòng nào.")
+        st.info(
+            "Chưa có đặt phòng nào."
+        )
 
     else:
 
         for _, booking in bookings.iterrows():
 
-            with st.container(border=True):
+            with st.container(
+                border=True
+            ):
 
                 col1, col2, col3, col4 = st.columns(
                     [1, 2, 2, 1]
                 )
 
+                # -----------------------------------------
+                # ROOM
+                # -----------------------------------------
+
                 with col1:
 
                     st.subheader(
-                        f"Phòng {booking['room_number']}"
+                        f"Phòng "
+                        f"{booking['room_number']}"
                     )
 
                     st.caption(
                         booking["room_type"]
                     )
+
+                # -----------------------------------------
+                # GUEST
+                # -----------------------------------------
 
                 with col2:
 
@@ -836,19 +1359,30 @@ elif menu == "💰 Đặt phòng hiện tại":
                     )
 
                     st.write(
-                        f"📞 {booking['phone'] or 'Chưa có'}"
+                        f"📞 "
+                        f"{booking['phone'] or 'Chưa có'}"
                     )
+
+                # -----------------------------------------
+                # BOOKING
+                # -----------------------------------------
 
                 with col3:
 
                     st.write(
-                        f"📅 {booking['check_in']} → "
+                        f"📅 "
+                        f"{booking['check_in']} → "
                         f"{booking['check_out']}"
                     )
 
                     st.write(
-                        f"💰 {format_currency(booking['total'])}"
+                        f"💰 "
+                        f"{format_currency(booking['total'])}"
                     )
+
+                # -----------------------------------------
+                # ACTION
+                # -----------------------------------------
 
                 with col4:
 
@@ -863,26 +1397,52 @@ elif menu == "💰 Đặt phòng hiện tại":
 
                             conn = get_connection()
 
-                            conn.execute("""
-                                UPDATE bookings
-                                SET status = 'Đang ở'
-                                WHERE id = ?
-                            """, (
-                                int(booking["id"]),
-                            ))
+                            if conn:
 
-                            conn.execute("""
-                                UPDATE rooms
-                                SET status = 'Đang ở'
-                                WHERE room_number = ?
-                            """, (
-                                booking["room_number"],
-                            ))
+                                cursor = conn.cursor()
 
-                            conn.commit()
-                            conn.close()
+                                try:
 
-                            st.rerun()
+                                    cursor.execute("""
+                                        UPDATE bookings
+                                        SET status = 'Đang ở'
+                                        WHERE id = %s
+                                    """, (
+                                        int(
+                                            booking["id"]
+                                        ),
+                                    ))
+
+                                    cursor.execute("""
+                                        UPDATE rooms
+                                        SET status = 'Đang ở'
+                                        WHERE room_number = %s
+                                    """, (
+                                        booking[
+                                            "room_number"
+                                        ],
+                                    ))
+
+                                    conn.commit()
+
+                                    st.success(
+                                        "Đã check-in."
+                                    )
+
+                                    st.rerun()
+
+                                except Error as e:
+
+                                    conn.rollback()
+
+                                    st.error(
+                                        f"❌ Lỗi: {e}"
+                                    )
+
+                                finally:
+
+                                    cursor.close()
+                                    conn.close()
 
                     elif status == "Đang ở":
 
@@ -893,38 +1453,64 @@ elif menu == "💰 Đặt phòng hiện tại":
 
                             conn = get_connection()
 
-                            conn.execute("""
-                                UPDATE bookings
-                                SET status = 'Đã trả phòng'
-                                WHERE id = ?
-                            """, (
-                                int(booking["id"]),
-                            ))
+                            if conn:
 
-                            conn.execute("""
-                                UPDATE rooms
-                                SET status = 'Đang dọn'
-                                WHERE room_number = ?
-                            """, (
-                                booking["room_number"],
-                            ))
+                                cursor = conn.cursor()
 
-                            conn.commit()
-                            conn.close()
+                                try:
 
-                            st.success(
-                                "Đã check-out khách."
-                            )
+                                    cursor.execute("""
+                                        UPDATE bookings
+                                        SET status = 'Đã trả phòng'
+                                        WHERE id = %s
+                                    """, (
+                                        int(
+                                            booking["id"]
+                                        ),
+                                    ))
 
-                            st.rerun()
+                                    cursor.execute("""
+                                        UPDATE rooms
+                                        SET status = 'Đang dọn'
+                                        WHERE room_number = %s
+                                    """, (
+                                        booking[
+                                            "room_number"
+                                        ],
+                                    ))
+
+                                    conn.commit()
+
+                                    st.success(
+                                        "Đã check-out khách."
+                                    )
+
+                                    st.rerun()
+
+                                except Error as e:
+
+                                    conn.rollback()
+
+                                    st.error(
+                                        f"❌ Lỗi: {e}"
+                                    )
+
+                                finally:
+
+                                    cursor.close()
+                                    conn.close()
 
                     elif status == "Đã trả phòng":
 
-                        st.success("Đã trả phòng")
+                        st.success(
+                            "Đã trả phòng"
+                        )
 
                     else:
 
-                        st.warning(status)
+                        st.warning(
+                            status
+                        )
 
 
 # =========================================================
@@ -933,37 +1519,53 @@ elif menu == "💰 Đặt phòng hiện tại":
 
 elif menu == "📈 Báo cáo":
 
-    st.title("📈 Báo cáo & thống kê")
+    st.title(
+        "📈 Báo cáo & thống kê"
+    )
 
     rooms = get_rooms()
     bookings = get_bookings()
 
-    # -----------------------------------------------------
+    # =====================================================
     # ROOM STATUS
-    # -----------------------------------------------------
+    # =====================================================
 
-    st.subheader("🛏️ Thống kê trạng thái phòng")
-
-    status_count = (
-        rooms["status"]
-        .value_counts()
-        .reset_index()
+    st.subheader(
+        "🛏️ Thống kê trạng thái phòng"
     )
 
-    status_count.columns = [
-        "Trạng thái",
-        "Số lượng"
-    ]
+    if not rooms.empty:
 
-    st.bar_chart(
-        status_count.set_index("Trạng thái")
-    )
+        status_count = (
+            rooms["status"]
+            .value_counts()
+            .reset_index()
+        )
 
-    # -----------------------------------------------------
+        status_count.columns = [
+            "Trạng thái",
+            "Số lượng"
+        ]
+
+        st.bar_chart(
+            status_count.set_index(
+                "Trạng thái"
+            )
+        )
+
+    else:
+
+        st.info(
+            "Chưa có dữ liệu phòng."
+        )
+
+    # =====================================================
     # REVENUE
-    # -----------------------------------------------------
+    # =====================================================
 
-    st.subheader("💰 Doanh thu")
+    st.subheader(
+        "💰 Doanh thu"
+    )
 
     if bookings.empty:
 
@@ -973,11 +1575,19 @@ elif menu == "📈 Báo cáo":
 
     else:
 
-        revenue = bookings[
+        completed_bookings = bookings[
             bookings["status"].isin(
-                ["Đang ở", "Đã trả phòng"]
+                [
+                    "Đang ở",
+                    "Đã trả phòng"
+                ]
             )
-        ]["total"].sum()
+        ]
+
+        revenue = (
+            completed_bookings["total"]
+            .sum()
+        )
 
         st.metric(
             "Tổng doanh thu",
@@ -985,11 +1595,7 @@ elif menu == "📈 Báo cáo":
         )
 
         revenue_by_room = (
-            bookings[
-                bookings["status"].isin(
-                    ["Đang ở", "Đã trả phòng"]
-                )
-            ]
+            completed_bookings
             .groupby("room_number")["total"]
             .sum()
             .reset_index()
@@ -1008,32 +1614,55 @@ elif menu == "📈 Báo cáo":
                 )
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # EXPORT
-    # -----------------------------------------------------
+    # =====================================================
 
-    st.subheader("📥 Xuất dữ liệu")
+    st.subheader(
+        "📥 Xuất dữ liệu"
+    )
 
     if not bookings.empty:
 
-        csv = bookings.to_csv(
-            index=False
-        ).encode("utf-8-sig")
+        csv_bookings = (
+            bookings
+            .to_csv(index=False)
+            .encode("utf-8-sig")
+        )
 
         st.download_button(
             label="📥 Tải danh sách đặt phòng CSV",
-            data=csv,
+            data=csv_bookings,
             file_name="bookings.csv",
             mime="text/csv"
         )
 
-    rooms_csv = rooms.to_csv(
-        index=False
-    ).encode("utf-8-sig")
+    if not rooms.empty:
 
-    st.download_button(
-        label="📥 Tải danh sách phòng CSV",
-        data=rooms_csv,
-        file_name="rooms.csv",
-        mime="text/csv"
-    )
+        csv_rooms = (
+            rooms
+            .to_csv(index=False)
+            .encode("utf-8-sig")
+        )
+
+        st.download_button(
+            label="📥 Tải danh sách phòng CSV",
+            data=csv_rooms,
+            file_name="rooms.csv",
+            mime="text/csv"
+        )
+
+    if not guests.empty:
+
+        csv_guests = (
+            guests
+            .to_csv(index=False)
+            .encode("utf-8-sig")
+        )
+
+        st.download_button(
+            label="📥 Tải danh sách khách hàng CSV",
+            data=csv_guests,
+            file_name="guests.csv",
+            mime="text/csv"
+        )
